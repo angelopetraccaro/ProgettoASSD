@@ -10,7 +10,7 @@ public class RestClient {
 	public static void main(String[] args) {
 		// TODO Auto-generated method stub
 
-		WebClient client = WebClient.create("http://localhost:8081/Driver/DriverRest");
+		WebClient client = WebClient.create("http://localhost:8081/AIEmulator/DriverRest");
 		
 		client.accept("application/json").type("application/json");
 		client.path("/status");
