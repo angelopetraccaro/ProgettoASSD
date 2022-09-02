@@ -1,0 +1,229 @@
+#include <WiFi101.h>   //per arduino mkr1000
+#include <PubSubClient.h>
+#include "SR04.h"
+#include <SPI.h>
+#include <ArduinoJson.h>
+#include <Servo.h>
+#include <LiquidCrystal.h>
+
+
+const char WIFI_SSID[] = "CampaniaCom_Petraccaro";  //nota: la conness deve essere 2.4GHz
+const char WIFI_PASS[] = "Coppolaro";
+int port = 8081;
+WiFiClient wifi;
+WiFiClient clientREST;
+
+int status = WL_IDLE_STATUS;
+IPAddress server(192,168,0,104);  //192,168,43,137
+PubSubClient clientMQTT(wifi);
+
+#define PIN_SERVO 3
+#define TRIG_PIN 4 //pin per sensore ultrasuono
+#define ECHO_PIN 5 //pin per sensore ultrasuono
+#define PIN_ir_enter 8 //sbarra ingresso
+#define PIN_ir_back 10   //sbarra uscita
+
+SR04 sr04 = SR04(ECHO_PIN,TRIG_PIN);
+long a;       //valore letto dal sensore ad ultrasuoni
+int id=0,i;
+Servo servo;
+LiquidCrystal lcd(7, 8, 9, 10, 11, 12);
+int flag1=0,flag2=0;
+int slot=6;
+boolean enable=false;
+String response;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(PIN_SERVO,OUTPUT);
+  servo.attach(PIN_SERVO);
+  
+  while(!Serial){;}
+  Serial.println("ok...connessione...");
+  while(WiFi.status() != WL_CONNECTED){
+    status=WiFi.begin(WIFI_SSID, WIFI_PASS);
+    delay(500);
+  }
+  Serial.println("Connected to WiFi\n");
+  clientMQTT.setServer(server,1883);
+  
+  if(clientMQTT.connect("arduino1")){
+    Serial.println("MQTT connected"); 
+  }else{
+    Serial.println("MQTT not connected");
+    Serial.println(clientMQTT.state());
+  } 
+
+  if (clientREST.connect(server,8081)) {
+    Serial.println("connected to server");
+
+//    // Make a HTTP request:
+//    clientREST.println("GET /AIEmulator2/DriverRest/status HTTP/1.1");
+//    clientREST.println("Host: 127.0.0.1");
+//    clientREST.println("Connection: close");
+//    clientREST.println();
+  } else {
+    Serial.println(" not connected to server");
+  }
+}
+
+void loop() {
+  clientMQTT.loop();
+  if (!clientMQTT.connected()) {
+    reconnect();
+  }
+  if (!clientREST.connected()) {
+    reconnectREST();
+  }
+  
+ //lettura e stampa su monitor la posizione dell'auto da Proximity sensor (ultrasuono)
+ a=sr04.Distance();
+ //Serial.print(a);
+ //Serial.println("cm");
+ if(a<=5)
+  passaggio_auto();
+
+  // Descrive il passaggio dell'auto sotto il 1 sensore in ingresso sbarra
+ // ir sensor sono sempre 1, 0 quando trovano l'ostacolo
+ // il flag ricorda se è passata una macchina sul sensore sbarra 1 e 2.
+ if(digitalRead (PIN_ir_enter) == LOW && flag1==0 && enable == true){
+  if(slot>0){
+    flag1=1; // attraversato il 1 sensore sbarra o in ingresso o uscita
+    if(flag2==0){  
+      servoMotoreOpen(); 
+    }
+  }else{
+    Serial.println("Parking full");
+  }
+ }
+
+ // Descrive il passaggio dell'auto sotto il 2 sensore sbarra
+ if(digitalRead (PIN_ir_back) == LOW && flag2==0 && slot<=2){
+  flag2=1;  // attraversato il 2 sensore sbarra o in ingresso o uscita
+  
+  // Descrive il passaggio dell'auto sotto il 1 sensore di uscita dal parcheggio
+  if(flag1==0){
+    servoMotoreOpen();
+  }
+ }
+
+ //chiusura della sbarra dopo passaggio sui 2 sensori
+ if(flag1==1 && digitalRead(PIN_ir_back)==LOW){
+   //da notare che se il sensore legge/non legge si chiude la sbarra
+   while(digitalRead(PIN_ir_back)==LOW){ //Serial.println("aspetto che oltrepassi il sensore"); 
+   }
+   flag1=0, flag2=0;
+   servoMotoreClose();
+   slot = slot-1;
+   display();
+   enable=false;
+ }
+ //chiusura della sbarra dopo passaggio sui 2 sensori
+ if(flag2==1 && digitalRead(PIN_ir_enter)==LOW){
+   while(digitalRead(PIN_ir_enter)==LOW){ //Serial.println("aspetto che oltrepassi il sensore"); 
+    }
+   flag1=0, flag2=0;
+   servoMotoreClose();
+   slot = slot+1;
+   display();
+ }
+
+}
+
+
+void passaggio_auto(){
+  id++;
+  char cstr[16];
+  itoa(id, cstr, 10);
+  Serial.println("Auto all'ingresso.");
+  clientMQTT.publish("/topic/car",cstr);
+  delay(1000);  //5 sec per attendere l'update stato
+
+ // GET per lettura stato ProximaCity 
+ // Make a HTTP request:
+ if(clientREST.connected()){
+    clientREST.println("GET /AIEmulator2/DriverRest/status HTTP/1.1");
+    clientREST.println("Host: 127.0.0.1");
+    clientREST.println("Connection: close");
+    clientREST.println();
+  }else{clientREST.println("ciao");}
+
+  while (!clientREST.available()){};
+  
+  if(clientREST.connected()){
+    while (clientREST.available()) {
+      char c = clientREST.read();
+      Serial.print(c);
+    }
+  }else{Serial.print("non connesso");}
+  
+    clientREST.stop();
+//  char res[100];
+//  int i;
+//  while(clientREST.available()){
+//   char c=clientREST.read();
+//   if(c=='{'){
+//    i=0;
+//    res[i]=c;
+//    while(clientREST.available()) {res[i]=clientREST.read();i++;}
+//    }
+//  }
+//  Serial.println(res);
+}
+  
+void servoMotoreClose(){
+  for (i=1; i<=100; i++){
+      servo.write(i); 
+      delay(15);
+  }
+}
+
+void servoMotoreOpen(){
+  for (i=100; i>=0; i--){
+      servo.write(i); 
+      delay(15);
+  }
+}
+
+void display(){
+  lcd.setCursor(0, 0);
+  lcd.print("Car Parking!  ");
+  lcd.setCursor(0, 1);
+  lcd.print("Slot left: ");
+  lcd.print(slot);
+  lcd.print("    ");
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!clientMQTT.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (clientMQTT.connect("arduino1")) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(clientMQTT.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void reconnectREST() {
+  // Loop until we're reconnected
+  while (!clientREST.connected()) {
+    Serial.print("Attempting REST connection...");
+    // Attempt to connect
+    if (clientREST.connect(server,8081)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(clientREST.status());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
